@@ -3,17 +3,23 @@ local TS = game:GetService("TextService")
 local RS = game:GetService("RunService")
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
 
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
 
 local Library = {}
-Library.AccentColor = Color3.fromRGB(0, 120, 255)
-Library.MainColor = Color3.fromRGB(26, 26, 28)
-Library.BackgroundColor = Color3.fromRGB(16, 16, 19)
-Library.OutlineColor = Color3.fromRGB(45, 45, 50)
-Library.FontColor = Color3.fromRGB(255, 255, 255)
+Library.AccentColor = Color3.fromRGB(140, 70, 255)
+Library.MainColor = Color3.fromRGB(24, 18, 32)
+Library.BackgroundColor = Color3.fromRGB(14, 10, 22)
+Library.SecondaryColor = Color3.fromRGB(20, 14, 28)
+Library.OutlineColor = Color3.fromRGB(55, 40, 75)
+Library.FontColor = Color3.fromRGB(245, 240, 255)
 Library.Signals = {}
+Library.ToggleKeybind = Enum.KeyCode.RightControl
+Library.Folder = "Velocity"
+Library.ConfigFolder = "Velocity/configs"
+Library.AutoLoadFile = "Velocity/autoload.txt"
 
 local Toggles, Options = {}, {}
 getgenv().Toggles = Toggles
@@ -30,8 +36,22 @@ pcall(function()
     end
 end)
 
-ScreenGui.Parent = CoreGui
+pcall(function()
+    ScreenGui.Parent = gethui and gethui() or CoreGui
+end)
+
+if not ScreenGui.Parent then
+    ScreenGui.Parent = CoreGui
+end
+
 Library.ScreenGui = ScreenGui
+
+local function safeCall(fn, ...)
+    if typeof(fn) == "function" then
+        local ok, err = pcall(fn, ...)
+        if not ok then warn("[Velocity UI]", err) end
+    end
+end
 
 local function create(class, props)
     local obj = Instance.new(class)
@@ -49,7 +69,7 @@ local function label(props)
         TextSize = props.TextSize or 14,
         Text = props.Text or "",
         TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Center,
-        TextYAlignment = Enum.TextYAlignment.Center,
+        TextYAlignment = props.TextYAlignment or Enum.TextYAlignment.Center,
         Size = props.Size or UDim2.new(1, 0, 0, 16),
         Position = props.Position or UDim2.new(),
         ZIndex = props.ZIndex or 1,
@@ -69,7 +89,7 @@ local function buttonFrame(parent, size)
     local inner = create("Frame", {
         Size = UDim2.new(1, -2, 1, -2),
         Position = UDim2.fromOffset(1, 1),
-        BackgroundColor3 = Library.MainColor,
+        BackgroundColor3 = Library.SecondaryColor,
         BorderColor3 = Library.OutlineColor,
         Parent = outer,
         ZIndex = 6
@@ -80,11 +100,26 @@ end
 
 local function updateGroupbox(gb)
     task.defer(function()
-        local layout = gb.Container:FindFirstChildOfClass("UIListLayout")
-        if layout then
+        local layout = gb.Container and gb.Container:FindFirstChildOfClass("UIListLayout")
+        if layout and gb.Frame then
             gb.Frame.Size = UDim2.new(1, 0, 0, layout.AbsoluteContentSize.Y + 32)
         end
     end)
+end
+
+local function ensureFolders()
+    if makefolder and not isfolder(Library.Folder) then pcall(makefolder, Library.Folder) end
+    if makefolder and not isfolder(Library.ConfigFolder) then pcall(makefolder, Library.ConfigFolder) end
+end
+
+local function canFiles()
+    return writefile and readfile and isfile and listfiles and makefolder
+end
+
+local function sanitizeName(name)
+    name = tostring(name or ""):gsub("[^%w_%-%s]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then name = "default" end
+    return name
 end
 
 local AddonFuncs = {}
@@ -111,17 +146,11 @@ end
 
 function AddonFuncs:AddButton(text, callback)
     local outer, inner = buttonFrame(self.Container, UDim2.new(1, -8, 0, 22))
-
-    label({
-        Text = text,
-        Size = UDim2.new(1, 0, 1, 0),
-        Parent = inner,
-        ZIndex = 7
-    })
+    label({Text = text, Size = UDim2.new(1, 0, 1, 0), Parent = inner, ZIndex = 7})
 
     outer.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            pcall(callback)
+            safeCall(callback)
         end
     end)
 
@@ -131,11 +160,7 @@ end
 
 function AddonFuncs:AddToggle(id, info)
     info = info or {}
-
-    local toggle = {
-        Value = info.Default or false,
-        Type = "Toggle"
-    }
+    local toggle = {Value = info.Default or false, Type = "Toggle"}
 
     local row = create("Frame", {
         BackgroundTransparency = 1,
@@ -153,7 +178,7 @@ function AddonFuncs:AddToggle(id, info)
         ZIndex = 6
     })
 
-    local txt = label({
+    label({
         Text = info.Text or id,
         Size = UDim2.new(1, -22, 1, 0),
         Position = UDim2.fromOffset(22, 0),
@@ -166,14 +191,12 @@ function AddonFuncs:AddToggle(id, info)
         self.Value = not not v
         box.BackgroundColor3 = self.Value and Library.AccentColor or Library.MainColor
         box.BorderColor3 = self.Value and Library.AccentColor or Library.OutlineColor
-        if self.Changed then
-            pcall(self.Changed, self.Value)
-        end
+        safeCall(self.Changed, self.Value)
     end
 
     function toggle:OnChanged(fn)
         self.Changed = fn
-        pcall(fn, self.Value)
+        safeCall(fn, self.Value)
         return self
     end
 
@@ -185,18 +208,13 @@ function AddonFuncs:AddToggle(id, info)
 
     toggle:SetValue(toggle.Value)
     Toggles[id] = toggle
-
     self:AddBlank(5)
     return toggle
 end
 
 function AddonFuncs:AddInput(id, info)
     info = info or {}
-
-    local input = {
-        Value = info.Default or "",
-        Type = "Input"
-    }
+    local input = {Value = info.Default or "", Type = "Input"}
 
     label({
         Text = info.Text or id,
@@ -225,24 +243,18 @@ function AddonFuncs:AddInput(id, info)
 
     function input:SetValue(v)
         self.Value = tostring(v or "")
-        if box.Text ~= self.Value then
-            box.Text = self.Value
-        end
-        if self.Changed then
-            pcall(self.Changed, self.Value)
-        end
+        if box.Text ~= self.Value then box.Text = self.Value end
+        safeCall(self.Changed, self.Value)
     end
 
     function input:OnChanged(fn)
         self.Changed = fn
-        pcall(fn, self.Value)
+        safeCall(fn, self.Value)
         return self
     end
 
     box:GetPropertyChangedSignal("Text"):Connect(function()
-        if box.Text ~= input.Value then
-            input:SetValue(box.Text)
-        end
+        if box.Text ~= input.Value then input:SetValue(box.Text) end
     end)
 
     Options[id] = input
@@ -252,7 +264,6 @@ end
 
 function AddonFuncs:AddSlider(id, info)
     info = info or {}
-
     local slider = {
         Value = info.Default or info.Min or 0,
         Min = info.Min or 0,
@@ -279,12 +290,7 @@ function AddonFuncs:AddSlider(id, info)
         ZIndex = 7
     })
 
-    local valueLabel = label({
-        Text = "",
-        Size = UDim2.new(1, 0, 1, 0),
-        Parent = inner,
-        ZIndex = 8
-    })
+    local valueLabel = label({Text = "", Size = UDim2.new(1, 0, 1, 0), Parent = inner, ZIndex = 8})
 
     local function round(v)
         return tonumber(string.format("%." .. slider.Rounding .. "f", v))
@@ -293,29 +299,25 @@ function AddonFuncs:AddSlider(id, info)
     function slider:SetValue(v)
         local nv = math.clamp(tonumber(v) or self.Min, self.Min, self.Max)
         nv = round(nv)
-
         self.Value = nv
         valueLabel.Text = tostring(nv)
-
-        local percent = (nv - self.Min) / (self.Max - self.Min)
+        local percent = (nv - self.Min) / math.max(self.Max - self.Min, 1)
         fill.Size = UDim2.new(percent, 0, 1, 0)
-
-        if self.Changed then
-            pcall(self.Changed, nv)
-        end
+        safeCall(self.Changed, nv)
     end
 
     function slider:OnChanged(fn)
         self.Changed = fn
-        pcall(fn, self.Value)
+        safeCall(fn, self.Value)
         return self
     end
 
     local dragging = false
 
     local function update()
-        local relative = math.clamp(Mouse.X - inner.AbsolutePosition.X, 0, inner.AbsoluteSize.X)
-        local percent = relative / inner.AbsoluteSize.X
+        local width = math.max(inner.AbsoluteSize.X, 1)
+        local relative = math.clamp(Mouse.X - inner.AbsolutePosition.X, 0, width)
+        local percent = relative / width
         slider:SetValue(slider.Min + ((slider.Max - slider.Min) * percent))
     end
 
@@ -326,23 +328,225 @@ function AddonFuncs:AddSlider(id, info)
         end
     end)
 
-    UIS.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end)
+    table.insert(Library.Signals, UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+    end))
 
-    RS.RenderStepped:Connect(function()
-        if dragging then
-            update()
-        end
-    end)
+    table.insert(Library.Signals, RS.RenderStepped:Connect(function()
+        if dragging then update() end
+    end))
 
     slider:SetValue(slider.Value)
     Options[id] = slider
-
     self:AddBlank(8)
     return slider
+end
+
+function AddonFuncs:AddDropdown(id, info)
+    info = info or {}
+    local dropdown = {Value = info.Default or "", Values = info.Values or {}, Type = "Dropdown", Open = false}
+
+    label({
+        Text = info.Text or id,
+        Size = UDim2.new(1, -8, 0, 16),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = self.Container,
+        ZIndex = 7
+    })
+
+    local outer, inner = buttonFrame(self.Container, UDim2.new(1, -8, 0, 22))
+    local txt = label({Text = "", Size = UDim2.new(1, -20, 1, 0), Position = UDim2.fromOffset(5, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = inner, ZIndex = 7})
+    label({Text = "▼", Size = UDim2.fromOffset(18, 18), Position = UDim2.new(1, -18, 0, 1), Parent = inner, ZIndex = 7})
+
+    local listFrame = create("Frame", {
+        Size = UDim2.new(1, -8, 0, 0),
+        BackgroundColor3 = Library.SecondaryColor,
+        BorderColor3 = Library.OutlineColor,
+        Visible = false,
+        Parent = self.Container,
+        ZIndex = 20
+    })
+
+    local listLayout = create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Parent = listFrame})
+
+    local function rebuild()
+        for _, child in pairs(listFrame:GetChildren()) do
+            if not child:IsA("UIListLayout") then child:Destroy() end
+        end
+
+        for _, value in ipairs(dropdown.Values) do
+            local item = create("Frame", {
+                Size = UDim2.new(1, 0, 0, 20),
+                BackgroundColor3 = Library.MainColor,
+                BorderColor3 = Library.OutlineColor,
+                Parent = listFrame,
+                ZIndex = 21
+            })
+            label({Text = tostring(value), Size = UDim2.new(1, -8, 1, 0), Position = UDim2.fromOffset(4, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = item, ZIndex = 22})
+            item.InputBegan:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                    dropdown:SetValue(value)
+                    dropdown:SetOpen(false)
+                end
+            end)
+        end
+
+        task.defer(function()
+            listFrame.Size = UDim2.new(1, -8, 0, dropdown.Open and listLayout.AbsoluteContentSize.Y or 0)
+            updateGroupbox(self)
+        end)
+    end
+
+    function dropdown:SetOpen(state)
+        self.Open = not not state
+        listFrame.Visible = self.Open
+        task.defer(function()
+            listFrame.Size = UDim2.new(1, -8, 0, self.Open and listLayout.AbsoluteContentSize.Y or 0)
+            updateGroupbox(self.ParentGroupbox or {Frame = listFrame.Parent, Container = listFrame.Parent})
+        end)
+    end
+
+    function dropdown:SetValue(v)
+        self.Value = tostring(v or "")
+        txt.Text = self.Value
+        safeCall(self.Changed, self.Value)
+    end
+
+    function dropdown:SetValues(values)
+        self.Values = values or {}
+        rebuild()
+    end
+
+    function dropdown:OnChanged(fn)
+        self.Changed = fn
+        safeCall(fn, self.Value)
+        return self
+    end
+
+    dropdown.ParentGroupbox = self
+
+    outer.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dropdown:SetOpen(not dropdown.Open)
+        end
+    end)
+
+    if dropdown.Value == "" and dropdown.Values[1] then dropdown.Value = tostring(dropdown.Values[1]) end
+    txt.Text = dropdown.Value
+    rebuild()
+    Options[id] = dropdown
+    self:AddBlank(7)
+    return dropdown
+end
+
+function AddonFuncs:AddKeyPicker(id, info)
+    info = info or {}
+    local kp = {
+        Value = info.Default or Enum.KeyCode.Unknown,
+        Mode = info.Mode or "Toggle",
+        Toggled = false,
+        Type = "KeyPicker"
+    }
+
+    local modes = {"Always", "Toggle", "Hold"}
+    local listening = false
+
+    local row = create("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, -8, 0, 22), Parent = self.Container, ZIndex = 5})
+    label({Text = info.Text or id, Size = UDim2.new(1, -112, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = row, ZIndex = 7})
+
+    local box = create("Frame", {
+        Size = UDim2.fromOffset(106, 20),
+        Position = UDim2.new(1, -106, 0, 1),
+        BackgroundColor3 = Library.SecondaryColor,
+        BorderColor3 = Library.OutlineColor,
+        Parent = row,
+        ZIndex = 6
+    })
+
+    local txt = label({Text = "", Size = UDim2.new(1, 0, 1, 0), Parent = box, ZIndex = 7})
+
+    local function keyName(k)
+        if typeof(k) == "EnumItem" then return k.Name end
+        return "None"
+    end
+
+    local function refresh()
+        txt.Text = keyName(kp.Value) .. " [" .. kp.Mode .. "]"
+    end
+
+    function kp:SetValue(key)
+        if typeof(key) == "EnumItem" and key.EnumType == Enum.KeyCode then
+            self.Value = key
+            refresh()
+            safeCall(self.Changed, self.Value, self.Mode, self.Toggled)
+        end
+    end
+
+    function kp:SetMode(mode)
+        if table.find(modes, mode) then
+            self.Mode = mode
+            refresh()
+            safeCall(self.Changed, self.Value, self.Mode, self.Toggled)
+        end
+    end
+
+    function kp:GetState()
+        if self.Mode == "Always" then return true end
+        return self.Toggled
+    end
+
+    function kp:OnChanged(fn)
+        self.Changed = fn
+        safeCall(fn, self.Value, self.Mode, self.Toggled)
+        return self
+    end
+
+    box.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            listening = true
+            txt.Text = "Press key..."
+        elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+            local current = table.find(modes, kp.Mode) or 2
+            kp:SetMode(modes[(current % #modes) + 1])
+        end
+    end)
+
+    table.insert(Library.Signals, UIS.InputBegan:Connect(function(input, processed)
+        if listening then
+            if input.UserInputType == Enum.UserInputType.Keyboard then
+                listening = false
+                kp:SetValue(input.KeyCode)
+            elseif input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.MouseButton2 then
+                listening = false
+                refresh()
+            end
+            return
+        end
+
+        if processed or input.UserInputType ~= Enum.UserInputType.Keyboard or input.KeyCode ~= kp.Value then return end
+
+        if kp.Mode == "Toggle" then
+            kp.Toggled = not kp.Toggled
+        elseif kp.Mode == "Hold" then
+            kp.Toggled = true
+        elseif kp.Mode == "Always" then
+            kp.Toggled = true
+        end
+
+        safeCall(kp.Changed, kp.Value, kp.Mode, kp.Toggled)
+    end))
+
+    table.insert(Library.Signals, UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == kp.Value and kp.Mode == "Hold" then
+            kp.Toggled = false
+            safeCall(kp.Changed, kp.Value, kp.Mode, kp.Toggled)
+        end
+    end))
+
+    refresh()
+    Options[id] = kp
+    self:AddBlank(7)
+    return kp
 end
 
 local GroupboxMeta = {}
@@ -357,39 +561,135 @@ function Library:MakeDraggable(frame, cutoff)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             local mousePos = Vector2.new(Mouse.X, Mouse.Y)
             local rel = mousePos - frame.AbsolutePosition
-
-            if rel.Y > (cutoff or 30) then
-                return
-            end
-
+            if rel.Y > (cutoff or 30) then return end
             dragging = true
             dragStart = mousePos
             startPos = frame.Position
         end
     end)
 
-    UIS.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end)
+    table.insert(Library.Signals, UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+    end))
 
-    RS.RenderStepped:Connect(function()
+    table.insert(Library.Signals, RS.RenderStepped:Connect(function()
         if dragging then
             local delta = Vector2.new(Mouse.X, Mouse.Y) - dragStart
-            frame.Position = UDim2.new(
-                startPos.X.Scale,
-                startPos.X.Offset + delta.X,
-                startPos.Y.Scale,
-                startPos.Y.Offset + delta.Y
-            )
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
         end
+    end))
+end
+
+function Library:GetConfigTable()
+    local data = {Toggles = {}, Options = {}}
+
+    for id, toggle in pairs(Toggles) do
+        data.Toggles[id] = toggle.Value
+    end
+
+    for id, option in pairs(Options) do
+        if option.Type == "Input" or option.Type == "Slider" or option.Type == "Dropdown" then
+            data.Options[id] = option.Value
+        elseif option.Type == "KeyPicker" then
+            data.Options[id] = {
+                Key = option.Value.Name,
+                Mode = option.Mode,
+                Toggled = option.Toggled
+            }
+        end
+    end
+
+    return data
+end
+
+function Library:LoadConfigTable(data)
+    if type(data) ~= "table" then return end
+
+    for id, value in pairs(data.Toggles or {}) do
+        if Toggles[id] and Toggles[id].SetValue then
+            Toggles[id]:SetValue(value)
+        end
+    end
+
+    for id, value in pairs(data.Options or {}) do
+        local option = Options[id]
+        if option then
+            if option.Type == "KeyPicker" and type(value) == "table" then
+                local key = Enum.KeyCode[value.Key or "Unknown"] or Enum.KeyCode.Unknown
+                option:SetValue(key)
+                option:SetMode(value.Mode or option.Mode)
+                option.Toggled = value.Toggled or false
+            elseif option.SetValue then
+                option:SetValue(value)
+            end
+        end
+    end
+end
+
+function Library:SaveConfig(name)
+    if not canFiles() then return false, "file functions unavailable" end
+    ensureFolders()
+    name = sanitizeName(name)
+    local path = Library.ConfigFolder .. "/" .. name .. ".json"
+    writefile(path, HttpService:JSONEncode(Library:GetConfigTable()))
+    return true
+end
+
+function Library:LoadConfig(name)
+    if not canFiles() then return false, "file functions unavailable" end
+    ensureFolders()
+    name = sanitizeName(name)
+    local path = Library.ConfigFolder .. "/" .. name .. ".json"
+    if not isfile(path) then return false, "config not found" end
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(readfile(path))
     end)
+    if not ok then return false, "invalid config" end
+    Library:LoadConfigTable(data)
+    return true
+end
+
+function Library:ListConfigs()
+    if not canFiles() then return {} end
+    ensureFolders()
+
+    local configs = {}
+    for _, file in ipairs(listfiles(Library.ConfigFolder)) do
+        local name = file:match("([^/\\]+)%.json$")
+        if name then table.insert(configs, name) end
+    end
+
+    table.sort(configs)
+    return configs
+end
+
+function Library:SetAutoload(name)
+    if not canFiles() then return false end
+    ensureFolders()
+    name = sanitizeName(name)
+    writefile(Library.AutoLoadFile, name)
+    return true
+end
+
+function Library:GetAutoload()
+    if not canFiles() then return "none" end
+    ensureFolders()
+    if isfile(Library.AutoLoadFile) then
+        local name = readfile(Library.AutoLoadFile)
+        if name and name ~= "" then return name end
+    end
+    return "none"
+end
+
+function Library:LoadAutoload()
+    local name = Library:GetAutoload()
+    if name ~= "none" then
+        return Library:LoadConfig(name)
+    end
 end
 
 function Library:CreateWindow(opts)
     opts = opts or {}
-
     local size = opts.Size or UDim2.fromOffset(550, 600)
 
     local outer = create("Frame", {
@@ -412,12 +712,7 @@ function Library:CreateWindow(opts)
         ZIndex = 2
     })
 
-    label({
-        Text = opts.Title or "Velocity",
-        Size = UDim2.new(1, 0, 0, 26),
-        Parent = inner,
-        ZIndex = 3
-    })
+    label({Text = opts.Title or "Velocity", Size = UDim2.new(1, 0, 0, 26), Parent = inner, ZIndex = 3})
 
     local tabBar = create("Frame", {
         BackgroundTransparency = 1,
@@ -427,12 +722,7 @@ function Library:CreateWindow(opts)
         ZIndex = 4
     })
 
-    create("UIListLayout", {
-        FillDirection = Enum.FillDirection.Horizontal,
-        SortOrder = Enum.SortOrder.LayoutOrder,
-        Padding = UDim.new(0, 4),
-        Parent = tabBar
-    })
+    create("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), Parent = tabBar})
 
     local tabArea = create("Frame", {
         BackgroundColor3 = Library.MainColor,
@@ -443,18 +733,11 @@ function Library:CreateWindow(opts)
         ZIndex = 3
     })
 
-    local win = {
-        Tabs = {},
-        Holder = outer
-    }
-
+    local win = {Tabs = {}, Holder = outer}
     local firstTab
 
     function win:AddTab(name)
-        local tab = {
-            Groupboxes = {}
-        }
-
+        local tab = {Groupboxes = {}}
         local width = TS:GetTextSize(name, 16, Enum.Font.Code, Vector2.new(1000, 1000)).X + 20
 
         local tabButton = create("Frame", {
@@ -465,12 +748,7 @@ function Library:CreateWindow(opts)
             ZIndex = 5
         })
 
-        label({
-            Text = name,
-            Size = UDim2.new(1, 0, 1, 0),
-            Parent = tabButton,
-            ZIndex = 6
-        })
+        label({Text = name, Size = UDim2.new(1, 0, 1, 0), Parent = tabButton, ZIndex = 6})
 
         local tabFrame = create("Frame", {
             Size = UDim2.new(1, 0, 1, 0),
@@ -504,17 +782,8 @@ function Library:CreateWindow(opts)
             ZIndex = 5
         })
 
-        create("UIListLayout", {
-            Padding = UDim.new(0, 8),
-            SortOrder = Enum.SortOrder.LayoutOrder,
-            Parent = left
-        })
-
-        create("UIListLayout", {
-            Padding = UDim.new(0, 8),
-            SortOrder = Enum.SortOrder.LayoutOrder,
-            Parent = right
-        })
+        create("UIListLayout", {Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = left})
+        create("UIListLayout", {Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = right})
 
         local function addGroupbox(parent, title)
             local frame = create("Frame", {
@@ -525,12 +794,7 @@ function Library:CreateWindow(opts)
                 ZIndex = 6
             })
 
-            label({
-                Text = title,
-                Size = UDim2.new(1, 0, 0, 22),
-                Parent = frame,
-                ZIndex = 7
-            })
+            label({Text = title, Size = UDim2.new(1, 0, 0, 22), Parent = frame, ZIndex = 7})
 
             local container = create("Frame", {
                 BackgroundTransparency = 1,
@@ -540,21 +804,10 @@ function Library:CreateWindow(opts)
                 ZIndex = 7
             })
 
-            create("UIListLayout", {
-                SortOrder = Enum.SortOrder.LayoutOrder,
-                Padding = UDim.new(0, 0),
-                Parent = container
-            })
+            create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 0), Parent = container})
 
-            local gb = setmetatable({
-                Frame = frame,
-                Container = container
-            }, GroupboxMeta)
-
-            task.defer(function()
-                updateGroupbox(gb)
-            end)
-
+            local gb = setmetatable({Frame = frame, Container = container}, GroupboxMeta)
+            task.defer(function() updateGroupbox(gb) end)
             return gb
         end
 
@@ -575,7 +828,6 @@ function Library:CreateWindow(opts)
                 other.Frame.Visible = false
                 other.Button.BackgroundColor3 = Library.BackgroundColor
             end
-
             tabFrame.Visible = true
             tabButton.BackgroundColor3 = Library.MainColor
         end
@@ -584,9 +836,7 @@ function Library:CreateWindow(opts)
         tab.Button = tabButton
 
         tabButton.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 then
-                tab:ShowTab()
-            end
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then tab:ShowTab() end
         end)
 
         win.Tabs[name] = tab
@@ -599,29 +849,103 @@ function Library:CreateWindow(opts)
         return tab
     end
 
+    function win:AddConfigTab()
+        local tab = self:AddTab("UI Settings")
+        local menu = tab:AddLeftGroupbox("Menu")
+        local config = tab:AddRightGroupbox("Configuration")
+
+        menu:AddButton("Unload", function()
+            Library:Unload()
+        end)
+
+        menu:AddKeyPicker("MenuKeybind", {
+            Text = "Menu bind",
+            Default = Library.ToggleKeybind,
+            Mode = "Toggle"
+        }):OnChanged(function(key)
+            Library.ToggleKeybind = key
+        end)
+
+        config:AddLabel("Config list")
+
+        local selectedConfig = ""
+        local configsDropdown
+
+        configsDropdown = config:AddDropdown("ConfigList", {
+            Text = "Configs",
+            Values = Library:ListConfigs(),
+            Default = ""
+        }):OnChanged(function(value)
+            selectedConfig = value
+        end)
+
+        local configName = config:AddInput("ConfigName", {
+            Text = "Config name",
+            Placeholder = "new config",
+            Default = ""
+        })
+
+        config:AddButton("Create config", function()
+            local name = sanitizeName(configName.Value)
+            Library:SaveConfig(name)
+            configsDropdown:SetValues(Library:ListConfigs())
+            configsDropdown:SetValue(name)
+            selectedConfig = name
+            Library:Notify("Created config: " .. name, 2)
+        end)
+
+        config:AddButton("Load config", function()
+            local name = sanitizeName(selectedConfig ~= "" and selectedConfig or configName.Value)
+            local ok, err = Library:LoadConfig(name)
+            Library:Notify(ok and ("Loaded config: " .. name) or ("Failed: " .. tostring(err)), 2)
+        end)
+
+        config:AddButton("Overwrite config", function()
+            local name = sanitizeName(selectedConfig ~= "" and selectedConfig or configName.Value)
+            local ok, err = Library:SaveConfig(name)
+            Library:Notify(ok and ("Saved config: " .. name) or ("Failed: " .. tostring(err)), 2)
+        end)
+
+        config:AddButton("Autoload config", function()
+            local name = sanitizeName(selectedConfig ~= "" and selectedConfig or configName.Value)
+            Library:SetAutoload(name)
+            Library:Notify("Autoload set: " .. name, 2)
+        end)
+
+        config:AddButton("Refresh config list", function()
+            configsDropdown:SetValues(Library:ListConfigs())
+            Library:Notify("Config list refreshed", 2)
+        end)
+
+        config:AddLabel("Current autoload: " .. Library:GetAutoload())
+        return tab
+    end
+
     function Library:Toggle()
         outer.Visible = not outer.Visible
     end
 
     table.insert(Library.Signals, UIS.InputBegan:Connect(function(input, processed)
         if processed then return end
-        if input.KeyCode == Enum.KeyCode.RightControl or input.KeyCode == Enum.KeyCode.RightShift then
+        if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Library.ToggleKeybind then
             Library:Toggle()
         end
     end))
 
     Library:MakeDraggable(outer, 28)
 
-    if opts.AutoShow then
-        outer.Visible = true
-    end
+    if opts.AutoShow then outer.Visible = true end
+
+    task.defer(function()
+        Library:LoadAutoload()
+    end)
 
     return win
 end
 
 function Library:Notify(text, duration)
     local frame = create("Frame", {
-        Size = UDim2.fromOffset(260, 34),
+        Size = UDim2.fromOffset(280, 34),
         Position = UDim2.fromOffset(20, 20),
         BackgroundColor3 = Library.BackgroundColor,
         BorderColor3 = Library.AccentColor,
@@ -639,16 +963,12 @@ function Library:Notify(text, duration)
     })
 
     task.delay(duration or 3, function()
-        if frame then
-            frame:Destroy()
-        end
+        if frame then frame:Destroy() end
     end)
 end
 
 function Library:SetWatermark(text)
-    if Library.Watermark then
-        Library.Watermark:Destroy()
-    end
+    if Library.Watermark then Library.Watermark:Destroy() end
 
     local frame = create("Frame", {
         Size = UDim2.fromOffset(260, 22),
@@ -673,14 +993,10 @@ end
 
 function Library:Unload()
     for _, sig in pairs(Library.Signals) do
-        pcall(function()
-            sig:Disconnect()
-        end)
+        pcall(function() sig:Disconnect() end)
     end
 
-    if ScreenGui then
-        ScreenGui:Destroy()
-    end
+    if ScreenGui then ScreenGui:Destroy() end
 end
 
 return Library
